@@ -4,21 +4,13 @@
     "copyright": "Copyright (c) 2014, Anton Gushcha",
     "authors": ["NCrashed <ncrashed@gmail.com>"],
     "license": "MIT",
+    "dependencies" : {
+        "dlogg": { "path": "../dlogg" } 
+    },
     "configurations": [
         {
-            "name": "default",
-            "dependencies" : {
-                "dlogg": ">=0.3.3" 
-            }
-        },
-        {
-            "name": "colorized",
-            "dependencies" : {
-                "dlogg": ">=0.3.3"
-            },
-            "subConfigurations" : {
-                "dlogg": "colorized"
-            }
+            "name": "default"
         }
-    ]
+    ],
+	"dflags-windows-x86": ["-m32mscoff"]
 }

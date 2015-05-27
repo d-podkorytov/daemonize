@@ -161,11 +161,15 @@ template isComposition(alias T)
 *   -----------
 */
 template Daemon(
-    string name,
+	string name,
+	string displayName,
+	string description,
     alias pSignalMap,
     alias pMainFunc)
 {
-    enum daemonName = name;
+	enum daemonName = name;
+	enum daemonDisplayName = displayName;
+	enum daemonDescription = description;
     alias signalMap = pSignalMap;
     alias mainFunc = pMainFunc; 
 }
@@ -232,6 +236,8 @@ template isDaemon(alias T)
 */
 template DaemonClient(
     string name,
+	string displayName,
+	string description,
     Signals...)
 {
     private template isSignal(T...)
@@ -241,7 +247,9 @@ template DaemonClient(
     
     static assert(allSatisfy!(isSignal, Signals), "All values of Signals parameter have to be of Signal type!");
     
-    enum daemonName = name;
+	enum daemonName = name;
+	enum daemonDisplayName = displayName;
+	enum daemonDescription = description;
     alias signals = Signals;
 }
 

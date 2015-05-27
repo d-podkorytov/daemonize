@@ -63,6 +63,12 @@ string defaultLockFile(string daemonName)
     return !isNativeSignal(sig);
 }
 
+shared ILogger savedLogger;
+
+void setLogger(shared ILogger logger) {
+	savedLogger = logger;
+}
+
 /**
 *    The template holds a set of functions that build, run and send signals to daemons
 *    that are built with $(B Daemon) or $(B DaemonClient) template.
@@ -135,18 +141,17 @@ template buildDaemon(alias DaemonInfo)
         *   buildDaemon!daemon.run(new shared StrictLogger(logFilePath)); 
         *    ----------
         */
-        int run(shared ILogger logger
+        int run(shared ILogger logger = null
             , string pidFilePath = "", string lockFilePath = ""
             , int userId = -1, int groupId = -1)
         { 
-            savedLogger = logger;
+			if (logger) savedLogger = logger;
             
             auto maybeStatus = queryServiceStatus();
             if(maybeStatus.isNull)
             {
                 savedLogger.logInfo("No service is installed!");
                 serviceInstall();
-                serviceStart();
                 return EXIT_SUCCESS;
             } 
             else
@@ -169,16 +174,26 @@ template buildDaemon(alias DaemonInfo)
                 return EXIT_SUCCESS;
             }
         }
+
+		void install(string path) {
+			serviceInstall(path);
+		}
     }
     
-    /**
+	/// Use in shared static this()
+	void setLogger(shared ILogger logger)
+	{
+		savedLogger = logger;
+	}
+	
+	/**
     *   Utility function that helps to uninstall the service from the system.
     *
     *   Note: Can be used with $(B DaemonClient) template, actually you can ommit signal list for the template.
     */
-    void uninstall(shared ILogger logger)
-    {
-        savedLogger = logger;
+	void uninstall(shared ILogger logger = null)
+	{
+		if (logger) savedLogger = logger;
         
         auto maybeStatus = queryServiceStatus();
         if(!maybeStatus.isNull)
@@ -200,9 +215,9 @@ template buildDaemon(alias DaemonInfo)
     *
     *   Note: Can be used with $(B DaemonClient) template.
     */
-    void sendSignal(shared ILogger logger, Signal sig, string pidFilePath = "")
+	void sendSignal(shared ILogger logger = null, Signal sig = Signal.Terminate, string pidFilePath = "")
     {
-        savedLogger = logger;
+        if (logger) savedLogger = logger;
         
         auto manager = getSCManager;
         scope(exit) CloseServiceHandle(manager);
@@ -217,9 +232,9 @@ template buildDaemon(alias DaemonInfo)
     }
     
     /// ditto with dynamic service name
-    void sendSignalDynamic(shared ILogger logger, string serviceName, Signal sig, string pidFilePath = "")
+    void sendSignalDynamic(shared ILogger logger = null, string serviceName = null, Signal sig = Signal.Terminate, string pidFilePath = "")
     {
-        savedLogger = logger;
+        if (logger) savedLogger = logger;
         
         auto manager = getSCManager;
         scope(exit) CloseServiceHandle(manager);
@@ -256,7 +271,6 @@ template buildDaemon(alias DaemonInfo)
     {
         __gshared SERVICE_STATUS serviceStatus;
         __gshared SERVICE_STATUS_HANDLE serviceStatusHandle;
-        shared ILogger savedLogger;
         
         bool shouldExit()
         {
@@ -267,19 +281,28 @@ template buildDaemon(alias DaemonInfo)
         {
             extern(System) static void serviceMain(uint argc, wchar** args) nothrow
             {
-                try
-                {
-                    // Windows don't know anything about our runtime
-                    // so register the thread at druntime's thread subsystem
-                    // and manually run all TLS constructors and destructors
-                    thread_attachThis();
-                    rt_moduleTlsCtor(); 
-                    scope(exit) rt_moduleTlsDtor();
-                    
-                    int code = EXIT_FAILURE;
-    
-                    serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-                    
+				import dlogg.strict;
+				import std.file : exists;
+				try {
+
+					import core.thread : Thread;
+					// Windows don't know anything about our runtime
+					// so register the thread at druntime's thread subsystem
+					// and manually run all TLS constructors and destructors
+					thread_attachThis();
+					Thread.getThis().name = "V|Main";
+					rt_moduleTlsCtor(); 
+				} catch (Exception e) {
+					if (savedLogger) {
+						savedLogger.logError(text("Internal daemon error, please bug report: ", th.file, ":", th.line, ": ", th.msg));
+						savedLogger.logError("Terminating...");
+					}
+					else assert(false);
+				}
+				scope(exit) rt_moduleTlsDtor();
+				try {
+					int code = EXIT_FAILURE;
+					serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
                     savedLogger.reload;
                     savedLogger.minOutputLevel = LoggingLevel.Muted;
                     savedLogger.logInfo("Registering control handler");
@@ -293,18 +316,20 @@ template buildDaemon(alias DaemonInfo)
                     }
                     
                     savedLogger.logInfo("Running user main delegate");
-                    reportServiceStatus(SERVICE_RUNNING, NO_ERROR, 0.dur!"msecs");
+
+					reportServiceStatus(SERVICE_RUNNING, NO_ERROR, 0.dur!"msecs");
+
                     try code = DaemonInfo.mainFunc(savedLogger, &shouldExit);
                     catch (Throwable ex) 
                     {
+						code = EXIT_FAILURE;
                         savedLogger.logError(text("Catched unhandled throwable at daemon level at ", ex.file, ":", ex.line, ": ", ex.msg));
                         savedLogger.logError("Terminating...");
-                        reportServiceStatus(SERVICE_STOPPED, EXIT_FAILURE, 0.dur!"msecs");
-                        return;
-                    }
-                    reportServiceStatus(SERVICE_STOPPED, NO_ERROR, 0.dur!"msecs");
-                }
-                catch(Throwable th)
+                    } 
+					reportServiceStatus(SERVICE_STOPPED, code, 0.dur!"msecs");
+
+				}
+				catch(Throwable th)
                 {
                     savedLogger.logError(text("Internal daemon error, please bug report: ", th.file, ":", th.line, ": ", th.msg));
                     savedLogger.logError("Terminating...");
@@ -447,35 +472,86 @@ template buildDaemon(alias DaemonInfo)
         }
         
         /// Registers service in SCM database
-        void serviceInstall()
+        void serviceInstall(string _path = null)
         {
             wchar[MAX_PATH] path;
-            if(!GetModuleFileNameW(null, path.ptr, MAX_PATH))
-                throw new LoggedException("Cannot install service! " ~ getLastErrorDescr); 
-            
+			wchar* pszPath;
+            if (!_path) {
+				if(!GetModuleFileNameW(null, path.ptr, MAX_PATH))
+                	throw new LoggedException("Cannot install service! " ~ getLastErrorDescr); 
+				pszPath = path.ptr;
+			}
+			else {
+				import std.utf : toUTF16z;
+				pszPath = cast(wchar*)_path.toUTF16z;
+			}
             auto manager = getSCManager();
             scope(exit) CloseServiceHandle(manager);
             
-            auto servname = cast(LPWSTR)DaemonInfo.daemonName.toUTF16z;
+			auto servname = cast(LPWSTR)DaemonInfo.daemonName.toUTF16z;
+			auto dispname = cast(LPWSTR)DaemonInfo.daemonDisplayName.toUTF16z;
+			import std.string : toStringz;
+			auto desc = cast(LPWSTR)DaemonInfo.daemonDescription.toUTF16z;
             auto service = CreateServiceW(
                 manager,
                 servname,
-                servname,
+				dispname,
                 SERVICE_ALL_ACCESS,
                 SERVICE_WIN32_OWN_PROCESS,
-                SERVICE_DEMAND_START,
+                SERVICE_AUTO_START,
                 SERVICE_ERROR_NORMAL,
-                path.ptr,
+                pszPath,
                 null,
                 null,
                 null,
                 null,
                 null);
-            scope(exit) CloseServiceHandle(service);
             
-            if(service is null)
-                throw new LoggedException("Failed to create service! " ~ getLastErrorDescr); 
-            
+			if(service is null)
+				throw new LoggedException("Failed to create service! " ~ getLastErrorDescr);
+
+			scope(exit) CloseServiceHandle(service);
+			BOOL ret = ChangeServiceConfig2W(service, cast(DWORD)1, cast(void*)&desc);
+
+			if(ret == 0)
+				throw new LoggedException("Failed to generate service description! " ~ getLastErrorDescr);
+
+			SERVICE_FAILURE_ACTIONS servFailActions;
+			SC_ACTION[2] failActions;
+			
+			failActions[0].Type = SC_ACTION_TYPE.SC_ACTION_RESTART; //Failure action: Restart Service
+			failActions[0].Delay = 500; //number of ms to wait
+			failActions[1].Type = SC_ACTION_TYPE.SC_ACTION_RESTART; //Failure action: Restart Service
+			failActions[1].Delay = 500; //number of ms to wait
+			
+			servFailActions.dwResetPeriod = 86400; // Reset Failures Counter, in Seconds = 1day
+			servFailActions.lpCommand = null; //Command to perform due to service failure, not used
+			servFailActions.lpRebootMsg = null; //Message during rebooting computer due to service failure, not used
+			servFailActions.cActions = 1; // Number of failure action to manage
+			servFailActions.lpsaActions = failActions.ptr;
+
+			ret = ChangeServiceConfig2W(service, cast(DWORD)2, cast(void*)&servFailActions); //Apply above settings
+			if(ret == 0)
+				throw new LoggedException("Failed to setup service autorecovery! " ~ getLastErrorDescr);
+
+			BOOL readStoppedErrorCodes = 1;
+			ret = ChangeServiceConfig2W(service, cast(DWORD)4, cast(void*)&readStoppedErrorCodes); //Apply above settings
+			if(ret == 0)
+				throw new LoggedException("Failed to setup service autorecovery bool flag! " ~ getLastErrorDescr);
+
+			if(!StartServiceW(service, 0, null))
+				throw new LoggedException(text("Failed to start service! ", getLastErrorDescr));
+
+			SERVICE_STATUS status;
+			while (status.dwCurrentState != SERVICE_RUNNING)
+			{
+				Thread.sleep(500.dur!"msecs");
+
+				if(!QueryServiceStatus(service, &status))
+					throw new LoggedException(text("Failed to query service! ", getLastErrorDescr));
+
+			}
+
             savedLogger.logInfo("Service installed successfully!");
         }
         
@@ -707,7 +783,7 @@ private
         }
     }
 }
-private
+private nothrow
 {
     extern (C) void  rt_moduleTlsCtor();
     extern (C) void  rt_moduleTlsDtor();
@@ -780,7 +856,31 @@ private extern(System)
     enum SC_MANAGER_LOCK = 0x0008;
     enum SC_MANAGER_MODIFY_BOOT_CONFIG = 0x0020;
     enum SC_MANAGER_QUERY_LOCK_STATUS = 0x0010;
-    
+
+	enum SC_ACTION_TYPE {
+		SC_ACTION_NONE = 0,
+		SC_ACTION_REBOOT = 2,
+		SC_ACTION_RESTART = 1,
+		SC_ACTION_RUN_COMMAND = 3
+	}
+
+	struct SC_ACTION {
+		SC_ACTION_TYPE Type;
+		DWORD          Delay;
+	}
+	
+	// hService is the service handle obtained with OpenService
+	
+	struct SERVICE_FAILURE_ACTIONS {
+		DWORD     dwResetPeriod;
+		LPTSTR    lpRebootMsg;
+		LPTSTR    lpCommand;
+		DWORD     cActions;
+		SC_ACTION *lpsaActions;
+	}
+
+	BOOL ChangeServiceConfig2W(SC_HANDLE, DWORD, LPVOID);
+
     SC_HANDLE CreateServiceW(
           SC_HANDLE hSCManager,
           LPWSTR lpServiceName,
