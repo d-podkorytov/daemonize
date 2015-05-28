@@ -292,7 +292,7 @@ template buildDaemon(alias DaemonInfo)
 					thread_attachThis();
 					Thread.getThis().name = "V|Main";
 					rt_moduleTlsCtor(); 
-				} catch (Exception e) {
+				} catch (Exception th) {
 					if (savedLogger) {
 						savedLogger.logError(text("Internal daemon error, please bug report: ", th.file, ":", th.line, ": ", th.msg));
 						savedLogger.logError("Terminating...");
@@ -489,9 +489,9 @@ template buildDaemon(alias DaemonInfo)
             scope(exit) CloseServiceHandle(manager);
             
 			auto servname = cast(LPWSTR)DaemonInfo.daemonName.toUTF16z;
-			auto dispname = cast(LPWSTR)DaemonInfo.daemonDisplayName.toUTF16z;
+			auto dispname = cast(LPWSTR)DaemonInfo.lang.serviceName.toUTF16z;
 			import std.string : toStringz;
-			auto desc = cast(LPWSTR)DaemonInfo.daemonDescription.toUTF16z;
+			auto desc = cast(LPWSTR)DaemonInfo.lang.serviceDescription.toUTF16z;
             auto service = CreateServiceW(
                 manager,
                 servname,

@@ -236,8 +236,7 @@ template isDaemon(alias T)
 */
 template DaemonClient(
     string name,
-	string displayName,
-	string description,
+	LANG,
     Signals...)
 {
     private template isSignal(T...)
@@ -248,8 +247,7 @@ template DaemonClient(
     static assert(allSatisfy!(isSignal, Signals), "All values of Signals parameter have to be of Signal type!");
     
 	enum daemonName = name;
-	enum daemonDisplayName = displayName;
-	enum daemonDescription = description;
+	LANG lang;
     alias signals = Signals;
 }
 
