@@ -162,14 +162,12 @@ template isComposition(alias T)
 */
 template Daemon(
 	string name,
-	string displayName,
-	string description,
+	LANG,
     alias pSignalMap,
     alias pMainFunc)
 {
 	enum daemonName = name;
-	enum daemonDisplayName = displayName;
-	enum daemonDescription = description;
+	LANG lang;
     alias signalMap = pSignalMap;
     alias mainFunc = pMainFunc; 
 }
