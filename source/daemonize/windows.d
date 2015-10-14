@@ -284,22 +284,25 @@ template buildDaemon(alias DaemonInfo)
 				import dlogg.strict;
 				import std.file : exists;
 				try {
-
+					import std.datetime : seconds;
 					import core.thread : Thread;
 					// Windows don't know anything about our runtime
 					// so register the thread at druntime's thread subsystem
 					// and manually run all TLS constructors and destructors
+					//version(TLSGC) gc_init_tls();
 					thread_attachThis();
 					Thread.getThis().name = "V|Main";
 					rt_moduleTlsCtor(); 
-				} catch (Exception th) {
+				} catch (Throwable th) {
+					scope(failure) assert(false);
 					if (savedLogger) {
 						savedLogger.logError(text("Internal daemon error, please bug report: ", th.file, ":", th.line, ": ", th.msg));
 						savedLogger.logError("Terminating...");
 					}
-					else assert(false);
 				}
-				scope(exit) rt_moduleTlsDtor();
+				scope(exit) {
+					rt_moduleTlsDtor();
+				}
 				try {
 					int code = EXIT_FAILURE;
 					serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
@@ -316,7 +319,7 @@ template buildDaemon(alias DaemonInfo)
                     }
                     
                     savedLogger.logInfo("Running user main delegate");
-
+					serviceStatus.dwCurrentState = SERVICE_RUNNING;
 					reportServiceStatus(SERVICE_RUNNING, NO_ERROR, 0.dur!"msecs");
 
                     try code = DaemonInfo.mainFunc(savedLogger, &shouldExit);
@@ -326,6 +329,7 @@ template buildDaemon(alias DaemonInfo)
                         savedLogger.logError(text("Catched unhandled throwable at daemon level at ", ex.file, ":", ex.line, ": ", ex.msg));
                         savedLogger.logError("Terminating...");
                     } 
+					serviceStatus.dwCurrentState = SERVICE_STOPPED;
 					reportServiceStatus(SERVICE_STOPPED, code, 0.dur!"msecs");
 
 				}
@@ -354,12 +358,22 @@ template buildDaemon(alias DaemonInfo)
                                     bool res = true;
                                     try 
                                     {
+										serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+										reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0.dur!"msecs");
                                         static if(__traits(compiles, handler(savedLogger, subsignal)))
                                             res = handler(savedLogger, subsignal);
                                         else
                                             res = handler(savedLogger);
                                             
-                                        if(!res) reportServiceStatus(SERVICE_STOPPED, NO_ERROR, 0.dur!"msecs");
+										if(res) {
+											Thread.sleep(2.seconds);
+											serviceStatus.dwCurrentState = SERVICE_STOPPED;
+											reportServiceStatus(SERVICE_STOPPED, NO_ERROR, 500.dur!"msecs");
+										}
+										else {
+											serviceStatus.dwCurrentState = SERVICE_RUNNING;
+											reportServiceStatus(SERVICE_RUNNING, NO_ERROR, 0.dur!"msecs");
+										}
                                     }
                                     catch(Throwable th)
                                     {
@@ -373,16 +387,26 @@ template buildDaemon(alias DaemonInfo)
                         {
                             case(daemon.mapSignal(signal)):
                             {
-                                savedLogger.logInfo(text("Caught signal ", signal));
+								savedLogger.logWarning(text("Caught signal ", signal));
                                 bool res = true;
                                 try 
                                 {
+									serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+									reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0.dur!"msecs");
                                     static if(__traits(compiles, handler(savedLogger, signal)))
                                         res = handler(savedLogger, signal);
                                     else
                                         res = handler(savedLogger);
                                         
-                                    if(!res) reportServiceStatus(SERVICE_STOPPED, NO_ERROR, 0.dur!"msecs");
+                                    if(res) {
+										Thread.sleep(2.seconds);
+										serviceStatus.dwCurrentState = SERVICE_STOPPED;
+										reportServiceStatus(SERVICE_STOPPED, NO_ERROR, 500.dur!"msecs");
+									}
+									else {
+										serviceStatus.dwCurrentState = SERVICE_RUNNING;
+										reportServiceStatus(SERVICE_RUNNING, NO_ERROR, 0.dur!"msecs");
+									}
                                 }
                                 catch(Throwable th)
                                 {
@@ -392,9 +416,14 @@ template buildDaemon(alias DaemonInfo)
                             }
                         }
                     }
+					case 4:
+						scope(failure) assert(false);
+						savedLogger.logInfo(text("Caught signal 4"));
+						reportServiceStatus(serviceStatus.dwCurrentState, NO_ERROR, 0.dur!"msecs");
+						break;
                     default:
                     {
-                        savedLogger.logWarning(text("Caught signal ", fdwControl, ". But don't have any handler binded!"));
+						savedLogger.logWarning(text("Caught signal ", fdwControl, ". But don't have any handler binded!"));
                     }
                 }
             }
@@ -785,6 +814,8 @@ private
 }
 private nothrow
 {
+	extern (C) void  gc_init_tls();
+	extern (C) void  gc_term_tls();
     extern (C) void  rt_moduleTlsCtor();
     extern (C) void  rt_moduleTlsDtor();
 }
